@@ -53,14 +53,20 @@ def main():
 
     # Fetch stock data
     stock_data = fetch_stock_data(ticker, start_date, end_date)
+    st.write("Fetched stock data:")
+    st.write(stock_data.head())
 
     # Preprocess data
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
+    st.write("Scaled data:")
+    st.write(scaled_data[:5])
 
     # Prepare data for LSTM
     time_step = 100
     X, y = prepare_data(scaled_data, time_step)
+    st.write("Prepared data for LSTM:")
+    st.write(f"X shape: {X.shape}, y shape: {y.shape}")
 
     # Reshape input to be [samples, time steps, features] which is required for LSTM
     X = X.reshape(X.shape[0], X.shape[1], 1)
@@ -70,6 +76,9 @@ def main():
     test_size = len(X) - train_size
     X_train, X_test = X[0:train_size], X[train_size:len(X)]
     y_train, y_test = y[0:train_size], y[train_size:len(y)]
+    st.write("Train and test data shapes:")
+    st.write(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
+    st.write(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
 
     # Create and train the LSTM model
     model = create_lstm_model((time_step, 1), lstm_layers, dense_layers)
