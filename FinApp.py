@@ -94,6 +94,12 @@ def main():
     y_train = scaler.inverse_transform([y_train])
     y_test = scaler.inverse_transform([y_test])
 
+    # Debugging: Check the lengths of the arrays
+    st.write("Lengths of arrays for DataFrame:")
+    st.write(f"Length of stock_data.index[time_step:len(train_predict)+time_step]: {len(stock_data.index[time_step:len(train_predict)+time_step])}")
+    st.write(f"Length of stock_data['Close'][time_step:len(train_predict)+time_step]: {len(stock_data['Close'][time_step:len(train_predict)+time_step])}")
+    st.write(f"Length of train_predict.flatten(): {len(train_predict.flatten())}")
+
     # Plotting
     st.subheader('Stock Price Prediction')
     fig = go.Figure()
