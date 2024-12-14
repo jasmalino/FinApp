@@ -1,117 +1,120 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+import plotly.graph_objs as go
 from sklearn.preprocessing import MinMaxScaler
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+import datetime
+
+# Streamlit caching to store API responses temporarily
+@st.cache_data
+def fetch_stock_data(ticker, start_date, end_date):
+    stock_data = yf.download(ticker, start=start_date, end=end_date)
+    return stock_data
+
+def create_lstm_model(input_shape, lstm_layers, dense_layers):
+    model = Sequential()
+    for i in range(lstm_layers):
+        model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(units=50))
+    for _ in range(dense_layers):
+        model.add(Dense(units=1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
+
+def prepare_data(data, time_step=1):
+    X, y = [], []
+    for i in range(len(data)-time_step-1):
+        a = data[i:(i+time_step), 0]
+        X.append(a)
+        y.append(data[i + time_step, 0])
+    return np.array(X), np.array(y)
 
 def main():
-    st.title("Stock Price Prediction App")
+    st.title("Financial Forecasting App")
 
-    # Get user input
-    ticker_symbol = st.text_input("Enter Stock Ticker Symbol (e.g., AAPL)")
-    start_date = st.date_input("Start Date")
-    end_date = st.date_input("End Date")
+    # Sidebar for user inputs
+    st.sidebar.header("User Input Parameters")
 
-    if ticker_symbol:
-        # Fetch data from Yahoo Finance
-        df = yf.download(ticker_symbol, start=start_date, end=end_date)
+    def user_input_features():
+        ticker = st.sidebar.text_input("Stock Ticker", 'AAPL')
+        start_date = st.sidebar.date_input("Start Date", datetime.date(2020, 1, 1))
+        end_date = st.sidebar.date_input("End Date", datetime.date.today())
+        epochs = st.sidebar.slider("Training Epochs", 1, 100, 25)
+        lstm_layers = st.sidebar.slider("LSTM Layers", 1, 5, 2)
+        dense_layers = st.sidebar.slider("Dense Layers", 1, 5, 1)
+        batch_size = st.sidebar.slider("Batch Size", 1, 100, 32)
+        return ticker, start_date, end_date, epochs, lstm_layers, dense_layers, batch_size
 
-        # Data preprocessing
-        data = df['Close'].values
-        data = data.reshape(-1, 1)
+    ticker, start_date, end_date, epochs, lstm_layers, dense_layers, batch_size = user_input_features()
 
-        # Normalize the data
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data)
+    # Fetch stock data
+    stock_data = fetch_stock_data(ticker, start_date, end_date)
 
-        # Split data into training and testing sets
-        train_size = int(len(scaled_data) * 0.8)
-        test_size = len(scaled_data) - train_size
-        train_data, test_data = scaled_data[0:train_size,:], scaled_data[train_size:len(scaled_data),:]
+    # Preprocess data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
 
-        # Convert an array of values into a dataset matrix
-        def create_dataset(dataset, look_back=1):
-            dataX, dataY = [], []
-            for i in range(len(dataset)-look_back-1):
-                a = dataset[i:(i+look_back), 0]
-                dataX.append(a)
-                dataY.append(dataset[i + look_back, 0])
-            return np.array(dataX), np.array(dataY)
+    # Prepare data for LSTM
+    time_step = 100
+    X, y = prepare_data(scaled_data, time_step)
 
-        # Reshape into X=t and Y=t+1
-        look_back = 60
-        X_train, y_train = create_dataset(train_data, look_back)
-        X_test, y_test = create_dataset(test_data, look_back)
+    # Reshape input to be [samples, time steps, features] which is required for LSTM
+    X = X.reshape(X.shape[0], X.shape[1], 1)
 
-        # Check if X_train is empty
-        if len(X_train) > 0:
-            # Reshape input to be [samples, time steps, features]
-            X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-            X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+    # Split data into train and test sets
+    train_size = int(len(X) * 0.8)
+    test_size = len(X) - train_size
+    X_train, X_test = X[0:train_size], X[train_size:len(X)]
+    y_train, y_test = y[0:train_size], y[train_size:len(y)]
 
-            # Build the LSTM model
-            model = Sequential()
-            model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
-            model.add(Dropout(0.2))
-            model.add(LSTM(units=50, return_sequences=True))
-            model.add(Dropout(0.2))
-            model.add(LSTM(units=50))
-            model.add(Dropout(0.2))
-            model.add(Dense(units=1))
+    # Create and train the LSTM model
+    model = create_lstm_model((time_step, 1), lstm_layers, dense_layers)
+    model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, verbose=1)
 
-            # Compile the model
-            model.compile(optimizer='adam', loss='mean_squared_error')
+    # Make predictions
+    train_predict = model.predict(X_train)
+    test_predict = model.predict(X_test)
 
-            # Train the model
-            model.fit(X_train, y_train, epochs=25, batch_size=32)
+    # Transform back to original form
+    train_predict = scaler.inverse_transform(train_predict)
+    test_predict = scaler.inverse_transform(test_predict)
+    y_train = scaler.inverse_transform([y_train])
+    y_test = scaler.inverse_transform([y_test])
 
-            # Make predictions
-            train_Predict = model.predict(X_train)
-            test_Predict = model.predict(X_test)
+    # Plotting
+    st.subheader('Stock Price Prediction')
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['Close'], mode='lines', name='Historical Data'))
+    fig.add_trace(go.Scatter(x=stock_data.index[time_step:len(train_predict)+time_step], y=train_predict.flatten(), mode='lines', name='Train Predictions'))
+    fig.add_trace(go.Scatter(x=stock_data.index[len(train_predict)+(time_step*2)+1:len(stock_data)-1], y=test_predict.flatten(), mode='lines', name='Test Predictions'))
+    st.plotly_chart(fig)
 
-            # Invert predictions
-            train_Predict = scaler.inverse_transform(train_Predict)
-            y_train = scaler.inverse_transform([y_train])
-            test_Predict = scaler.inverse_transform(test_Predict)
-            y_test = scaler.inverse_transform([y_test])
+    # Download as CSV
+    st.subheader('Download Predicted Data')
+    predicted_data = pd.DataFrame({
+        'Date': stock_data.index[time_step:len(train_predict)+time_step],
+        'Actual Price': stock_data['Close'][time_step:len(train_predict)+time_step],
+        'Predicted Price': train_predict.flatten()
+    })
+    st.download_button(
+        label="Download as CSV",
+        data=predicted_data.to_csv(index=False),
+        file_name='predicted_stock_prices.csv',
+        mime='text/csv',
+    )
 
-            # Visualize the results
-            plt.figure(figsize=(16, 6))
-            plt.plot(y_train.flatten(), label='Actual Train Price')
-            plt.plot(train_Predict.flatten(), label='Predicted Train Price')
-            plt.title('Stock Price Prediction (Train Data)')
-            plt.xlabel('Time')
-            plt.ylabel('Price')
-            plt.legend()
-            st.pyplot(plt)
-
-            plt.figure(figsize=(16, 6))
-            plt.plot(y_test.flatten(), label='Actual Test Price')
-            plt.plot(test_Predict.flatten(), label='Predicted Test Price')
-            plt.title('Stock Price Prediction (Test Data)')
-            plt.xlabel('Time')
-            plt.ylabel('Price')
-            plt.legend()
-            st.pyplot(plt)
-
-            # Predict future prices
-            x_input = test_data[len(test_data)-look_back:].reshape(1, -1)
-            x_input = x_input.reshape((1, x_input.shape[1], 1))
-            future_prediction = model.predict(x_input)
-            future_prediction = scaler.inverse_transform(future_prediction)
-
-            st.write(f"Predicted price for the next day: {future_prediction[0][0]}")
-
-            # Download data as CSV
-            df_results = pd.DataFrame({'Date': df.index, 'Actual Price': df['Close'], 'Predicted Price': np.concatenate((train_Predict.flatten(), test_Predict.flatten(), future_prediction.flatten()))})
-            csv = df_results.to_csv(index=False)
-            st.download_button("Download Results", data=csv, file_name="stock_predictions.csv", mime='text/csv')
-        else:
-            st.write("No data available for training.")
+    # How it works section
+    st.subheader('How it Works')
+    st.write("""
+    This app uses an LSTM (Long Short-Term Memory) neural network to predict stock prices. The model is trained on historical stock data fetched from the Yahoo Finance API.
+    Users can select a stock ticker, specify the historical data range, and configure model parameters such as training epochs, LSTM layers, and batch size.
+    The app displays historical stock data and overlays the predicted prices on the same chart using Plotly for interactive and zoomable graphs.
+    Users can also download the historical and predicted data as a CSV file.
+    """)
 
 if __name__ == '__main__':
     main()
