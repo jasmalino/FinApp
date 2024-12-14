@@ -1,2 +1,2 @@
 # FinApp
-Financial Streamlit App
+Basic Financial App using Streamlit and Yahoo API.
