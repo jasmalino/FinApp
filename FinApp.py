@@ -1,89 +1,130 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
+import yfinance as yf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+import plotly.graph_objects as go
+from io import BytesIO
 
-# Streamlit app configuration
-st.title("Finance Price Prediction App")
-st.write("This app predicts stock prices for the next week using Machine Learning models.")
+# Streamlit App Title
+st.title("Stock Price Prediction App")
 
-# Sidebar for user input
-st.sidebar.header("Input Settings")
-selected_stock = st.sidebar.text_input("Enter the stock ticker symbol (e.g., AAPL):", "AAPL")
+# Sidebar for user inputs
+st.sidebar.header("User Inputs")
 
-# Fetch data from Yahoo Finance
-def fetch_data(ticker):
+# Stock ticker input
+ticker = st.sidebar.text_input("Enter Stock Ticker Symbol:", value="AAPL")
+
+# Date range inputs
+date_range = st.sidebar.date_input(
+    "Select Historical Data Range:", [pd.to_datetime('2022-01-01'), pd.to_datetime('2023-01-01')]
+)
+
+# ML model parameters
+epochs = st.sidebar.number_input("Training Epochs:", min_value=1, max_value=100, value=10)
+lstm_units = st.sidebar.number_input("LSTM Layers:", min_value=1, max_value=256, value=50)
+batch_size = st.sidebar.number_input("Batch Size:", min_value=1, max_value=512, value=32)
+
+# Function to fetch stock data
+@st.cache
+def fetch_stock_data(ticker, start, end):
     try:
-        data = yf.download(ticker, start="2010-01-01", end=pd.Timestamp.today().strftime('%Y-%m-%d'))
+        data = yf.download(ticker, start=start, end=end)
         return data
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         return None
 
-# Preprocess data for LSTM
-@st.cache
-def preprocess_data(data):
+# Fetch historical stock data
+if date_range and len(date_range) == 2:
+    start_date, end_date = date_range
+    stock_data = fetch_stock_data(ticker, start_date, end_date)
+else:
+    stock_data = None
+
+if stock_data is not None and not stock_data.empty:
+    st.write(f"Displaying data for {ticker} from {start_date} to {end_date}")
+    st.dataframe(stock_data)
+
+    # Normalize data for LSTM
     scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+    scaled_data = scaler.fit_transform(stock_data['Close'].values.reshape(-1, 1))
 
-    X_train = []
-    y_train = []
-    for i in range(60, len(scaled_data) - 7):  # Use past 60 days to predict the next 7 days
-        X_train.append(scaled_data[i-60:i, 0])
-        y_train.append(scaled_data[i:i+7, 0])
+    # Prepare training and testing datasets
+    train_size = int(len(scaled_data) * 0.8)
+    train_data, test_data = scaled_data[:train_size], scaled_data[train_size:]
 
-    X_train, y_train = np.array(X_train), np.array(y_train)
-    X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+    def create_dataset(data, time_step=60):
+        X, y = [], []
+        for i in range(len(data) - time_step - 1):
+            X.append(data[i:(i + time_step), 0])
+            y.append(data[i + time_step, 0])
+        return np.array(X), np.array(y)
 
-    return X_train, y_train, scaler
+    time_step = 60
+    X_train, y_train = create_dataset(train_data, time_step)
+    X_test, y_test = create_dataset(test_data, time_step)
 
-# Build LSTM model
-def build_model():
-    model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(60, 1)))
-    model.add(LSTM(units=50, return_sequences=False))
-    model.add(Dense(units=25))
-    model.add(Dense(units=7))  # Predict 7 days
+    # Reshape data for LSTM
+    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+
+    # Build LSTM model
+    model = Sequential([
+        LSTM(units=lstm_units, return_sequences=True, input_shape=(time_step, 1)),
+        Dropout(0.2),
+        LSTM(units=lstm_units, return_sequences=False),
+        Dropout(0.2),
+        Dense(1)
+    ])
 
     model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
 
-# Main workflow
-if st.sidebar.button("Predict Prices"):
-    # Fetch data
-    st.write(f"Fetching data for {selected_stock}...")
-    stock_data = fetch_data(selected_stock)
+    # Train the model
+    with st.spinner('Training the model...'):
+        model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, verbose=0)
+    st.success('Model trained successfully!')
 
-    if stock_data is not None and not stock_data.empty:
-        st.write("Data fetched successfully. Displaying the latest data:")
-        st.dataframe(stock_data.tail())
+    # Predict on test data
+    predictions = model.predict(X_test)
+    predictions = scaler.inverse_transform(predictions)
 
-        # Preprocess the data
-        st.write("Preprocessing the data...")
-        X_train, y_train, scaler = preprocess_data(stock_data)
+    # Prepare actual vs. predicted data
+    actual_prices = scaler.inverse_transform(y_test.reshape(-1, 1))
+    predicted_prices = predictions.flatten()
+    timestamps = stock_data.index[-len(predicted_prices):]
 
-        # Build and train the model
-        st.write("Building and training the model...")
-        model = build_model()
-        model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=1)
+    result_df = pd.DataFrame({
+        'Timestamp': timestamps,
+        'Actual Prices': actual_prices.flatten(),
+        'Predicted Prices': predicted_prices
+    })
 
-        # Predict future prices
-        last_60_days = stock_data['Close'].values[-60:]
-        last_60_scaled = scaler.transform(last_60_days.reshape(-1, 1))
-        X_test = np.array([last_60_scaled]).reshape(1, 60, 1)
+    # Plot data
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=result_df['Timestamp'], y=result_df['Actual Prices'], mode='lines', name='Actual Prices'))
+    fig.add_trace(go.Scatter(x=result_df['Timestamp'], y=result_df['Predicted Prices'], mode='lines', name='Predicted Prices'))
 
-        predictions = model.predict(X_test)
-        predictions = scaler.inverse_transform(predictions).flatten()
+    st.plotly_chart(fig)
 
-        st.write("Predicted prices for the next week:")
-        st.write(predictions)
+    # Download results
+    csv_data = result_df.to_csv(index=False).encode()
+    st.download_button(
+        label="Download Predictions as CSV",
+        data=csv_data,
+        file_name=f"{ticker}_predictions.csv",
+        mime='text/csv'
+    )
 
-        # Display results
-        future_dates = pd.date_range(start=stock_data.index[-1] + pd.Timedelta(days=1), periods=7)
-        prediction_df = pd.DataFrame({"Date": future_dates, "Predicted Price": predictions})
-        st.line_chart(prediction_df.set_index("Date"))
-    else:
-        st.error("Failed to fetch data. Please check the stock ticker symbol.")
+    # How it works section
+    st.markdown("""## How it Works
+    1. Enter the stock ticker symbol (e.g., AAPL for Apple Inc.).
+    2. Select the date range for historical data.
+    3. Adjust the machine learning model parameters as needed.
+    4. View the historical data, predicted prices, and download results in CSV format.
+    """)
+
+else:
+    st.error("No data available. Please check the stock ticker or date range.")
